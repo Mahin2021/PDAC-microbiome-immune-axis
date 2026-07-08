@@ -1,0 +1,1595 @@
+---
+title: "LHRH_016_analysis"
+author: "Leon Heffinger"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,        # TRUE = Show code by default; FALSE = Hide code by default
+  message = FALSE,     # Suppress messages
+  warning = FALSE,     # Suppress warnings
+  fig.align = "center",
+  fig.width = 32,
+  fig.height = 30
+)
+
+```
+
+```{r install.pkg, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+install.pkg <- function(x){
+  new.pkg <- x[!(x %in% installed.packages()[, "Package"])]
+  if (length(new.pkg) > 0){
+    install.packages(new.pkg, dependencies = TRUE, repos = "https://cloud.r-project.org")
+    sapply(x, require, character.only = TRUE)
+  }else{
+    sapply(x, require, character.only = TRUE)
+  }
+}
+packages <- c("broom", "dplyr", "BiocManager", "remotes", "ggpubr", "tibble", 'tidyverse', 'ggplot2', 'devtools', 'factoextra', 'stringr', "magrittr" , "circlize", "NMF", "bsicons", "parallel", "grDevices", "colorRamps","RColorBrewer", "ggalluvial", "readr", "umap", "sf", "spatialreg","spatstat", "readxl","drc", "Rmisc", "tidyr", "purrr", "pheatmap", "RColorBrewer", "scales", "colorspace", "nortest", "rstatix", "broom", "dplyr", "ggpubr", "tibble", 'stringr', "pheatmap", "reshape2", "ggpattern","gtsummary", "gt", "rmarkdown","markdown", "html")
+install.pkg(packages) 
+```
+
+## Functions
+
+```{r}
+is_outlier <- function(x, threshold = 0.75) {
+  q <- quantile(x, probs = c(0.25, 0.75))
+  iqr <- diff(q)
+  lower_bound <- q[1] - threshold * iqr
+  upper_bound <- q[2] + threshold * iqr
+  outliers <- x < lower_bound | x > upper_bound
+  return(outliers)
+}
+  
+normalize_columns_by_group <- function(df, id_column, columns_to_normalize, reference_column) {
+  # Group by the ID column and normalize the specified columns
+  df <- df %>%
+    group_by(!!sym(id_column)) %>%
+    mutate(across(all_of(columns_to_normalize), 
+                  ~ . / mean(get(reference_column), na.rm = TRUE), 
+                  .names = "{.col}_normalized")) %>%
+    ungroup()
+  
+  return(df)
+}
+
+#function for mean calculation and putting sds into plots
+data_summary <- function(x) {
+  m <- mean(x)
+  ymin <- m-sd(x)
+  ymax <- m+sd(x)
+  return(c(y=m,ymin=ymin,ymax=ymax))
+}
+```
+
+```{r}
+data_filtered <- read_delim("Microbiome_spatial_data.csv", 
+    delim = ",", escape_double = FALSE, trim_ws = TRUE)
+
+#View(data_filtered)
+```
+
+
+
+## Count Classifications
+
+### Males
+
+```{r}
+data_filtered_male <- data_filtered %>%
+  filter((Sex == "Male"))
+
+counts_male <- as.data.frame(table(data_filtered_male$Classification))
+
+colnames(counts_male) <- c("Classification", "Count")
+
+counts_male$Sex <- "Male"
+
+total <- sum(counts_male$Count)
+counts_male$Frequency <- (counts_male$Count / total)  # Rounded to 2 decimal places
+
+print(counts_male)
+
+
+
+```
+
+### Females
+
+```{r}
+data_filtered_Female <- data_filtered %>%
+  filter((Sex == "Female"))
+
+counts_Female <- as.data.frame(table(data_filtered_Female$Classification))
+
+colnames(counts_Female) <- c("Classification", "Count")
+
+counts_Female$Sex <- "Female"
+
+total <- sum(counts_Female$Count)
+counts_Female$Frequency <- (counts_Female$Count / total)  
+
+print(counts_Female)
+
+
+
+
+```
+
+## Counts by donors and sex
+
+```{r}
+counts_by_donor_male <- data_filtered %>%
+  dplyr::filter(Sex == "Male", !is.na(ID), !is.na(Classification)) %>%
+  dplyr::group_by(ID, Classification) %>%
+  dplyr::summarise(Count = dplyr::n(), .groups = "drop_last") %>%
+  dplyr::mutate(Total = sum(Count),
+                Frequency = Count / Total) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Sex = "Male") %>%
+  dplyr::select(ID, Sex, Classification, Count, Frequency)
+
+counts_by_donor_male
+
+counts_by_donor_female <- data_filtered %>%
+  dplyr::filter(Sex == "Female", !is.na(ID), !is.na(Classification)) %>%
+  dplyr::group_by(ID, Classification) %>%
+  dplyr::summarise(Count = dplyr::n(), .groups = "drop_last") %>%
+  dplyr::mutate(Total = sum(Count),
+                Frequency = Count / Total) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Sex = "Female") %>%
+  dplyr::select(ID, Sex, Classification, Count, Frequency)
+
+counts_by_donor_female
+
+
+counts_by_donor<-rbind(counts_by_donor_female,counts_by_donor_male)
+
+counts_by_donor
+```
+
+```{r}
+p_cleveland <- ggplot(counts_by_donor, aes(x = Count, y = ID)) +
+  geom_point(aes(fill = Classification), color = "black", shape = 21, size = 2.8, alpha = 0.9) +
+  scale_fill_manual(values = c(
+  "#1A237E", "#FFB74D", "#76FF03", "#4DB6AC", "#01579B",
+  "#E040FB", "#607D8B", "#827717", "#C8E6C9", "#18FFFF",
+  "#90CAF9", "#880E4F", "#424242", "#FFFF00", "#1B5E20",
+  "#E6EE9C", "#2962FF", "#F8BBD0", "#E65100", "#00B8D4",
+  "#1DE9B6", "#E0E0E0", "#D50000"
+))+
+  facet_grid(Classification ~ Sex, scales = "free_y") +
+  labs(title = "Cleveland Dot Plots: Counts per Donor",
+       x = "Count", y = "Donor") +
+  theme_bw(base_size = 12) +
+  theme(panel.grid.major.y = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+p_cleveland
+
+ggsave("cleveland_counts.pdf", p_cleveland, width = 10, height = 30)
+
+```
+
+```{r}
+counts_by_donor_no_Pan_CK <- counts_by_donor %>%
+  dplyr::filter(!Classification == "Pan_CK")
+p_cleveland_y <- ggplot(counts_by_donor_no_Pan_CK, aes(x = Count, y = ID)) +
+  geom_point(aes(fill = Classification), color = "black", shape = 21, size = 2.8, alpha = 0.9) +
+  scale_fill_manual(values = c(
+  "#1A237E", "#FFB74D", "#76FF03", "#4DB6AC", "#01579B",
+  "#E040FB", "#607D8B", "#827717", "#C8E6C9", "#18FFFF",
+  "#90CAF9", "#424242", "#FFFF00", "#1B5E20",
+  "#E6EE9C", "#2962FF", "#F8BBD0", "#E65100", "#00B8D4",
+  "#1DE9B6", "#E0E0E0", "#D50000"
+))+
+  facet_grid(Classification ~ Sex, scales = "free") +
+  labs(title = "Cleveland Dot Plots: Counts per Donor",
+       x = "Count", y = "Donor") +
+  theme_bw(base_size = 12) +
+  theme(panel.grid.major.y = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+p_cleveland_y
+
+ggsave("cleveland_counts_no_pan_ck.pdf", p_cleveland_y, width = 10, height = 25)
+
+```
+
+```{r}
+counts_by_donor_test <- counts_by_donor %>%
+  dplyr::filter(!Classification == "LTA")
+  
+p_grouped <- ggplot(counts_by_donor_test, aes(x = ID, y = Count, fill = Classification)) +
+  geom_col(position = position_dodge(width = 0.85), width = 0.8, color = "grey20", linewidth = 0.1) +
+  facet_wrap(~ Classification, scales = "fixed") +
+  scale_fill_manual(values = c(
+  "#1A237E", "#FFB74D", "#76FF03", "#4DB6AC", "#01579B",
+  "#E040FB", "#607D8B", "#827717", "#C8E6C9", "#18FFFF", "#880E4F", "#424242", "#FFFF00", "#1B5E20",
+  "#E6EE9C", "#2962FF", "#F8BBD0", "#E65100", "#00B8D4",
+  "#1DE9B6", "#E0E0E0", "#D50000"
+))+
+  labs(title = "Grouped Bars: Counts per Classification and Donor",
+       x = "Donor", y = "Count", fill = "Classification") +
+  theme_bw(base_size = 25) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid.major.x = element_blank())
+
+p_grouped <- p_grouped+ scale_y_log10(labels = scales::label_number(accuracy = 1))
+ggsave("grouped_bars_counts.pdf", p_grouped, width = 22, height = 20)
+p_grouped+ scale_y_log10(labels = scales::label_number(accuracy = 1))
+
+```
+
+
+
+# Heatmaps
+
+## Heatmaps Male
+
+### Distance to specific labeling
+
+```{r}
+data_filtered_male <- data_filtered %>%
+  filter((Sex == "Male"))
+
+
+#data_filtered_male_single_detections <- data_filtered_male[, grepl("to detection with", names(data_filtered_male)) | !grepl("to detection", names(data_filtered_male))]
+
+data_filtered_male_combinations <- data_filtered_male[, !grepl("to detection with", names(data_filtered_male))]
+# Calculate the mean of the distance columns grouped by Classification
+cols_to_drop <- c("Distance to detection PanCK_CD3_CD8A_LTA_LPS µm", "Distance to detection PanCK_CD3_CD8A_LPS µm", "Distance to detection PanCK_CD3_LPS µm", "Distance to detection PanCK_CD3_LTA_LPS µm", "Distance to detection PanCK_LTA_LPS µm", "Distance to detection PanCK_CD3_LTA µm", "Distance to detection PanCK_CD3_CD8A_LTA µm", "Distance to detection PanCK_LPS µm", "Distance to detection PanCK_LTA µm")
+data_filtered_male_combinations <- data_filtered_male[
+  , !names(data_filtered_male) %in% cols_to_drop, drop = FALSE
+]
+#
+# Filter columns related to "Distance to detection"
+distance_columns <- grep("Distance to detection", names(data_filtered_male_combinations), value = TRUE)
+
+combined_mean_distances <- data_filtered_male_combinations %>%
+  group_by(Classification) %>%
+  summarize_at(vars(one_of(distance_columns)), ~mean(., na.rm = TRUE)) %>%
+  pivot_longer(cols = -Classification, names_to = "Distance", values_to = "Mean")
+
+
+# Pivot the dataframe for heatmap
+combined_heatmap_data <- combined_mean_distances %>%
+  pivot_wider(names_from = Distance, values_from = Mean)
+
+# Determine the common order for rows and columns
+common_row_order <- combined_heatmap_data$Classification
+common_col_order <- colnames(combined_heatmap_data)[-1]
+
+# Function to create heatmap with common order and swapped axes
+create_heatmap <- function(dataframe, Sex, row_order, col_order) {
+
+  # Filter columns related to "Distance to detection"
+  distance_columns <- grep("Distance to detection", names(dataframe), value = TRUE)
+
+  # Calculate the mean of the distance columns grouped by Classification
+  mean_distances <- dataframe %>%
+    group_by(Classification) %>%
+    dplyr::summarize(across(all_of(distance_columns), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(cols = -Classification, names_to = "Distance", values_to = "Mean")
+
+  # Pivot the dataframe for heatmap
+  heatmap_data <- mean_distances %>%
+    pivot_wider(names_from = Distance, values_from = Mean)
+
+  # Convert to matrix for heatmap
+  heatmap_matrix <- as.matrix(heatmap_data[,-1])
+  rownames(heatmap_matrix) <- heatmap_data$Classification
+
+  # Reorder rows and columns based on the common order
+  heatmap_matrix <- heatmap_matrix[row_order, col_order]
+
+  # Transpose the matrix to swap axes
+  heatmap_matrix <- t(heatmap_matrix)
+
+  # Plot the heatmap with a common color range
+  pheatmap(heatmap_matrix,
+           cluster_rows = FALSE,
+           cluster_cols = FALSE,
+           display_numbers = TRUE,
+           color = colorRampPalette(c("white", "#ADDFFF", "#0909FF"))(200),
+           breaks = seq(0, 2000, length.out = 201),
+           main = paste("Mean Distance to Detection [µm] by Classification -", Sex))
+}
+
+Distance_Heatmap_males_combinations <- create_heatmap(data_filtered_male_combinations, "Male", common_row_order, common_col_order)
+ggsave("Distance_Heatmap_males_combinations.pdf", Distance_Heatmap_males_combinations, height = 5, width = 13)
+
+
+```
+
+## Heatmaps Female
+
+### Distance to specific labeling
+
+```{r}
+data_filtered_Female <- data_filtered %>%
+  filter((Sex == "Female"))
+
+
+#data_filtered_Female_single_detections <- data_filtered_Female[, grepl("to detection with", names(data_filtered_Female)) | !grepl("to detection", names(data_filtered_Female))]
+
+data_filtered_Female_combinations <- data_filtered_Female[, !grepl("to detection with", names(data_filtered_Female))]
+cols_to_drop <- c("Distance to detection PanCK_CD3_CD8A_LTA_LPS µm", "Distance to detection PanCK_CD3_CD8A_LPS µm", "Distance to detection PanCK_CD3_LPS µm", "Distance to detection PanCK_CD3_LTA_LPS µm", "Distance to detection PanCK_LTA_LPS µm", "Distance to detection PanCK_CD3_LTA µm", "Distance to detection PanCK_CD3_CD8A_LTA µm", "Distance to detection PanCK_LPS µm", "Distance to detection PanCK_LTA µm")
+data_filtered_Female_combinations <- data_filtered_Female[
+  , !names(data_filtered_Female) %in% cols_to_drop, drop = FALSE
+]
+# Calculate the mean of the distance columns grouped by Classification
+
+# Filter columns related to "Distance to detection"
+distance_columns <- grep("Distance to detection", names(data_filtered_Female_combinations), value = TRUE)
+
+combined_mean_distances <- data_filtered_Female_combinations %>%
+  group_by(Classification) %>%
+  summarize_at(vars(one_of(distance_columns)), ~mean(., na.rm = TRUE)) %>%
+  pivot_longer(cols = -Classification, names_to = "Distance", values_to = "Mean")
+
+
+# Pivot the dataframe for heatmap
+combined_heatmap_data <- combined_mean_distances %>%
+  pivot_wider(names_from = Distance, values_from = Mean)
+
+# Determine the common order for rows and columns
+common_row_order <- combined_heatmap_data$Classification
+common_col_order <- colnames(combined_heatmap_data)[-1]
+
+
+# Function to create heatmap with common order and swapped axes
+create_heatmap <- function(dataframe, Sex, row_order, col_order) {
+
+  # Filter columns related to "Distance to detection"
+  distance_columns <- grep("Distance to detection", names(dataframe), value = TRUE)
+
+  # Calculate the mean of the distance columns grouped by Classification
+  mean_distances <- dataframe %>%
+    group_by(Classification) %>%
+    dplyr::summarize(across(all_of(distance_columns), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(cols = -Classification, names_to = "Distance", values_to = "Mean")
+
+  # Pivot the dataframe for heatmap
+  heatmap_data <- mean_distances %>%
+    pivot_wider(names_from = Distance, values_from = Mean)
+
+  # Convert to matrix for heatmap
+  heatmap_matrix <- as.matrix(heatmap_data[,-1])
+  rownames(heatmap_matrix) <- heatmap_data$Classification
+
+  # Reorder rows and columns based on the common order
+  heatmap_matrix <- heatmap_matrix[row_order, col_order]
+
+  # Transpose the matrix to swap axes
+  heatmap_matrix <- t(heatmap_matrix)
+
+  # Plot the heatmap with a common color range
+  pheatmap(heatmap_matrix,
+           cluster_rows = FALSE,
+           cluster_cols = FALSE,
+           display_numbers = TRUE,
+           color = colorRampPalette(c("white", "#ADDFFF", "#0909FF"))(200),
+           breaks = seq(0, 2000, length.out = 201),
+           main = paste("Mean Distance to Detection [µm] by Classification -", Sex))
+}
+
+
+Distance_Heatmap_Females_combinations <- create_heatmap(data_filtered_Female_combinations, "Female", common_row_order, common_col_order)
+ggsave("Distance_Heatmap_Females_combinations.pdf", Distance_Heatmap_Females_combinations, height = 5, width = 13)
+
+#height = 10, width = 22)
+```
+
+### Plotting
+
+```{r}
+# Generate a pastel palette by interpolating from a base pastel palette
+base_colors <- brewer.pal(8, "Pastel1")  # You can also try "Pastel2"
+pastel_palette <- colorRampPalette(base_colors)(32)
+pastel_palette2 <- colorRampPalette(base_colors)(31)
+
+non_pastel_palette <- qualitative_hcl(32, palette = "Dynamic")  # You can try "Set 2", "Set 3", or "Dynamic"
+non_pastel_palette2 <- qualitative_hcl(31, palette = "Dynamic")  # You can try "Set 2", "Set 3", or "Dynamic"
+
+counts_all <- rbind(counts_Female, counts_male)
+counts_without_other <- counts_all %>%
+  filter(!grepl("other", Classification))
+
+    
+
+Tissue_Classification_Counts <- ggplot(counts_all, aes(x = Sex, y = Count, fill = Classification)) +
+  geom_bar(stat = "identity", color="black") +
+  scale_y_continuous(breaks = seq(0,400000, by = 100000),limits = c(0,400000))+
+  labs(x = "Sex", y = "Classification Counts", fill = "Classification") +
+  ggtitle("Tissue Classification Counts") +
+  scale_fill_manual(values = c(
+  "#1A237E", "#FFB74D", "#76FF03", "#4DB6AC", "#01579B",
+  "#E040FB", "#607D8B", "#827717", "#C8E6C9", "#18FFFF",
+  "#90CAF9", "#880E4F", "#424242", "#FFFF00", "#1B5E20",
+  "#E6EE9C", "#2962FF", "#F8BBD0", "#E65100", "#00B8D4",
+  "#1DE9B6", "#E0E0E0", "#D50000"
+))+
+  theme_minimal(base_size = 30)
+
+
+
+ggsave("Tissue_Classification_Counts.pdf", Tissue_Classification_Counts, height = 10, width = 10)
+
+print(Tissue_Classification_Counts)
+```
+
+```{r}
+Tissue_Classification_Frequencies <- ggplot(counts_all, aes(x = Sex, y = Frequency, fill = Classification)) +
+  geom_bar(stat = "identity", color="black") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  labs(x = "Sex", y = "Classification Frequency (%)", fill = "Classification") +
+  ggtitle("Tissue Classification Frequencies") +
+  scale_fill_manual(values = c(
+  "#1A237E", "#FFB74D", "#76FF03", "#4DB6AC", "#01579B",
+  "#E040FB", "#607D8B", "#827717", "#C8E6C9", "#18FFFF",
+  "#90CAF9", "#880E4F", "#424242", "#FFFF00", "#1B5E20",
+  "#E6EE9C", "#2962FF", "#F8BBD0", "#E65100", "#00B8D4",
+  "#1DE9B6", "#E0E0E0", "#D50000"
+))+
+  theme_minimal(base_size = 30)
+
+ggsave("Tissue_Classification_Frequencies.pdf", Tissue_Classification_Frequencies, height = 10, width = 10)
+print(Tissue_Classification_Frequencies)
+```
+
+```{r}
+
+counts_all_plot_panck_bacteria <- counts_all %>%
+  filter((Classification== "PanCK_LTA_LPS" | Classification== "PanCK_LTA" | Classification== "PanCK_LPS"))
+
+Tissue_Classification_Frequencies_colocalization <- ggplot(counts_all_plot_panck_bacteria, aes(x = Sex, y = Frequency, fill = Classification)) +
+  geom_bar(stat = "identity", color="black") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 0.1)) +
+  labs(x = "Sex", y = "Classification Frequency (%)", fill = "Classification") +
+  ggtitle("Tissue Classification Frequencies") +
+  scale_fill_manual(values = c("#1DE9B6", "#E0E0E0", "#D50000"))+
+  theme_minimal(base_size = 30)
+
+
+
+ggsave("Tissue_Classification_Frequencies_colocalization.pdf", Tissue_Classification_Frequencies_colocalization, height = 10, width = 10)
+print(Tissue_Classification_Frequencies_colocalization)
+
+
+```
+
+```{r}
+
+counts_all_plot_PanCK_tcells <- counts_all %>%
+  filter((Classification== "PanCK_CD3_CD8" | Classification== "PanCK_CD3"))
+
+Tissue_Classification_Frequencies_colocalization_tcells <- ggplot(counts_all_plot_PanCK_tcells, aes(x = Sex, y = Frequency, fill = Classification)) +
+  geom_bar(stat = "identity", color="black") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 0.01)) +
+  labs(x = "Sex", y = "Classification Frequency (%)", fill = "Classification") +
+  ggtitle("Tissue Classification Frequencies") +
+  scale_fill_manual(values = c("#424242", "#FFFF00"))+
+  theme_minimal(base_size = 30)
+
+
+
+ggsave("Tissue_Classification_Frequencies_colocalization_tcells.pdf", Tissue_Classification_Frequencies_colocalization_tcells, height = 10, width = 10)
+print(Tissue_Classification_Frequencies_colocalization_tcells)
+
+
+```
+
+### Distance to specific labeling female - male
+
+```{r}
+# Filter Female and Male datasets
+data_filtered_Female <- data_filtered %>%
+  filter(Sex == "Female")
+data_filtered_Male <- data_filtered %>%
+  filter(Sex == "Male")
+
+# Remove single detection columns
+data_filtered_Female_combinations <- data_filtered_Female[, !grepl("to detection with", names(data_filtered_Female))]
+data_filtered_Male_combinations <- data_filtered_Male[, !grepl("to detection with", names(data_filtered_Male))]
+
+# Identify distance columns
+distance_columns <- grep("Distance to detection", names(data_filtered_Female_combinations), value = TRUE)
+
+# Compute mean distances for Female
+female_means <- data_filtered_Female_combinations %>%
+  group_by(Classification) %>%
+  summarize_at(vars(one_of(distance_columns)), ~mean(., na.rm = TRUE)) %>%
+  pivot_longer(cols = -Classification, names_to = "Distance", values_to = "Mean")
+
+# Compute mean distances for Male
+male_means <- data_filtered_Male_combinations %>%
+  group_by(Classification) %>%
+  summarize_at(vars(one_of(distance_columns)), ~mean(., na.rm = TRUE)) %>%
+  pivot_longer(cols = -Classification, names_to = "Distance", values_to = "Mean")
+
+# Merge and compute difference
+diff_means <- female_means %>%
+  left_join(male_means, by = c("Classification", "Distance"), suffix = c("_Female", "_Male")) %>%
+  mutate(Diff = Mean_Female - Mean_Male)
+
+# Pivot for heatmap
+heatmap_data <- diff_means %>%
+  dplyr::select(Classification, Distance, Diff) %>%
+  pivot_wider(names_from = Distance, values_from = Diff)
+
+# Convert to matrix
+heatmap_matrix <- as.matrix(heatmap_data[,-1])
+rownames(heatmap_matrix) <- heatmap_data$Classification
+
+# Optional: reorder rows and columns if needed
+# heatmap_matrix <- heatmap_matrix[common_row_order, common_col_order]
+
+# Transpose to match original orientation
+heatmap_matrix <- t(heatmap_matrix)
+
+# Plot heatmap
+f_m<-pheatmap(heatmap_matrix,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         display_numbers = TRUE,
+         color = colorRampPalette(c("#311B92", "white", "#AEEA00"))(200),
+         breaks = seq(-1000, 1000, length.out = 201),
+         main = "Difference Heatmap (Female − Male)\nMean Distance to Detection [µm]")
+
+
+ggsave("Distance_Heatmap_Females_males_combinations.pdf", f_m, height = 10, width = 22)
+
+```
+
+## Melt data
+
+```{r}
+data_filtered <- data_filtered[, !grepl("to detection with", names(data_filtered))]
+names(data_filtered)
+# Step 1: Identify distance columns
+distance_columns <- grep("Distance to detection", names(data_filtered), value = TRUE)
+
+# Step 2: Create a new long-format dataframe
+data_long <- data_filtered %>%
+  dplyr::select(Image, `Object ID`, Classification, Sex, ID, all_of(distance_columns)) %>%
+  pivot_longer(cols = all_of(distance_columns),
+               names_to = "Pair",
+               values_to = "Distance")
+
+# Step 3: Clean the 'Pair' column to extract target cell type
+data_long <- data_long %>%
+  mutate(Pair = gsub("Distance to detection with ", "", Pair),
+         Pair_Label = paste(Classification, "to", Pair))
+
+
+data_long <- data_long %>%
+  filter(!grepl("with", Pair))
+
+data_long <- data_long %>%
+  filter(!is.na(Distance))
+
+
+
+```
+
+## Amazing statistics, testing for data distribution and variance for female classifications
+
+```{r}
+
+data_filtered_Pan_CK <- data_long %>%
+  filter(Classification == "Pan_CK")
+data_filtered_Pan_CK <- data_filtered_Pan_CK %>%
+  filter(!Pair_Label == "Pan_CK to Distance to detection Pan_CK µm" )
+
+data_filtered_PanCK_female <- data_filtered_Pan_CK %>%
+  filter((Sex == "Female"))
+```
+
+```{r}
+##Data distribution Glut1 expression for Female classifications
+results_ad_female <- data_filtered_PanCK_female %>%
+  group_by(Pair_Label) %>%
+  summarise(ad_test_female_pair = list(ad.test(Distance)))
+
+# Print the results
+print(results_ad_female$ad_test_female_pair)
+```
+
+## Amazing statistics, looking at residuals females
+
+```{r}
+
+# Residualplot 
+create_residual_plot <- function(data, group) {
+  model <- lm(Distance ~ Image + ID, data = data)  # Modell mit ID
+  data$residuals <- residuals(model)
+  data$fitted <- fitted(model)
+  
+  ggplot(data, aes(x = fitted, y = residuals)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    ggtitle(paste("Residual Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Function QQ-Plot
+create_qq_plot <- function(data, group) {
+  ggplot(data, aes(sample = Distance)) +
+    stat_qq() +
+    stat_qq_line() +
+    ggtitle(paste("QQ Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Apply to all groups
+plots_residual <- data_filtered_PanCK_female %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_residual_plot(.x, .y$Pair_Label))
+
+plots_qq <- data_filtered_PanCK_female %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_qq_plot(.x, .y$Pair_Label))
+
+# Display plots
+for (plot in plots_residual) print(plot)
+for (plot in plots_qq) print(plot)
+
+```
+
+## Statistical Tests for not normally distributed and inequal variances
+
+```{r}
+#For comparing classifications
+
+data_filtered_Pan_CK %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  lapply(function(df) kruskal.test(Distance ~ Pair_Label, data = df))
+
+
+
+```
+
+```{r}
+
+results_mann_whitney_data_filtered_Pan_CK <- data_filtered_Pan_CK %>%
+  group_by(Pair_Label) %>%
+  nest() %>%
+  mutate(
+    test = map(data, ~ wilcox.test(Distance ~ Sex, data = .x)),
+    p_value = map_dbl(test, ~ .x$p.value),
+    statistic = map_dbl(test, ~ .x$statistic)
+  ) %>%
+  select(Pair_Label, p_value, statistic)
+
+print(results_mann_whitney_data_filtered_Pan_CK)
+```
+
+## Amazing statistics, testing for data distribution and variance for male classifications
+
+```{r}
+data_filtered_PanCK_male <- data_filtered_Pan_CK %>%
+  filter((Sex == "Male"))
+```
+
+```{r}
+##Data distribution Glut1 expression for male classifications
+results_ad_male <- data_filtered_PanCK_male %>%
+  group_by(Pair_Label) %>%
+  summarise(ad_test_male_pair = list(ad.test(Distance)))
+
+# Print the results
+print(results_ad_male$ad_test_male_pair)
+```
+
+
+## Amazing statistics, looking at residuals males
+
+```{r}
+
+# Residualplot 
+create_residual_plot <- function(data, group) {
+  model <- lm(Distance ~ Image + ID, data = data)  # Modell mit ID
+  data$residuals <- residuals(model)
+  data$fitted <- fitted(model)
+  
+  ggplot(data, aes(x = fitted, y = residuals)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    ggtitle(paste("Residual Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Function QQ-Plot
+create_qq_plot <- function(data, group) {
+  ggplot(data, aes(sample = Distance)) +
+    stat_qq() +
+    stat_qq_line() +
+    ggtitle(paste("QQ Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Apply to all groups
+plots_residual <- data_filtered_PanCK_male %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_residual_plot(.x, .y$Pair_Label))
+
+plots_qq <- data_filtered_PanCK_male %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_qq_plot(.x, .y$Pair_Label))
+
+# Display plots
+for (plot in plots_residual) print(plot)
+for (plot in plots_qq) print(plot)
+
+```
+
+## Statistical Tests for not normally distributed and inequal variances
+
+```{r}
+#For comparing classifications
+
+data_filtered_Pan_CK %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  lapply(function(df) kruskal.test(Distance ~ Pair_Label, data = df))
+
+
+
+```
+
+```{r}
+
+results_mann_whitney_data_filtered_Pan_CK <- data_filtered_Pan_CK %>%
+  group_by(Pair_Label) %>%
+  nest() %>%
+  mutate(
+    test = map(data, ~ wilcox.test(Distance ~ Sex, data = .x)),
+    p_value = map_dbl(test, ~ .x$p.value),
+    statistic = map_dbl(test, ~ .x$statistic)
+  ) %>%
+  select(Pair_Label, p_value, statistic)
+
+print(results_mann_whitney_data_filtered_Pan_CK)
+```
+
+# Boxplots
+
+## Pan_CK
+
+```{r}
+#Create a grouping variable to split the 28 categories into chunks (e.g., 7 per panel)
+data_filtered_Pan_CK <- data_filtered_Pan_CK %>%
+  mutate(Pair_Group = paste0("_", ceiling(as.numeric(factor(Pair_Label)) / 11)))
+
+Pan_CK <- ggplot(data_filtered_Pan_CK, aes(x = Pair_Label, y = Distance, fill = Sex)) +
+  geom_boxplot(outlier.shape = 21, outlier.fill = "black", outlier.size = 2) +
+  stat_compare_means(
+    aes(group = Sex),
+    method = "wilcox.test", # or "t.test" depending on your analysis
+    label = "p.signif",     # shows stars instead of p-values
+    label.y = max(data_filtered_Pan_CK$Distance, na.rm = TRUE) * 1.05
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = c("Female" = "#FF0000", "Male" = "#0000FF")) +
+  labs(
+    title = "Cell–Cell Distance by Pair and Sex",
+    subtitle = "Comparison of distances between Pan_CK and other classifications",
+    x = NULL,
+    y = "Distance (µm)",
+    fill = "Sex"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14),
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  ) +
+  facet_wrap(~ Pair_Group, nrow = 2, ncol = 1, scales = "free_x")+
+  coord_cartesian(ylim = c(0, max(data_filtered_Pan_CK$Distance, na.rm = TRUE) * 1.1))
+
+print(Pan_CK)
+ggsave("PanCK_Boxplots.pdf", Pan_CK, height = 20, width = 22)
+
+```
+## Violin
+```{r}
+PanCK_violin <- ggplot(data_filtered_Pan_CK, aes(x = Pair_Label, y = Distance, fill = Sex)) +
+  geom_violin(outlier.shape = 21, outlier.fill = "black", outlier.size = 2) +
+  stat_compare_means(
+    aes(group = Sex),
+    method = "wilcox.test", # or "t.test" depending on your analysis
+    label = "p.signif",     # shows stars instead of p-values
+    label.y = max(data_filtered_Pan_CK$Distance, na.rm = TRUE) * 1.05
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = c("Female" = "#FF0000", "Male" = "#0000FF")) +
+  labs(
+    title = "Cell–Cell Distance by Pair and Sex",
+    subtitle = "Comparison of distances between Pan_CK and other classifications",
+    x = NULL,
+    y = "Distance (µm)",
+    fill = "Sex"
+  ) +
+  stat_summary(fun.data = function(x) data.frame(y = 2000, 
+              label = paste("Median =",round(median(x), digits = 2))), 
+               position = position_dodge(width = 0.9),
+                vjust = -0.6,
+               geom="text") +
+  theme(
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14),
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  ) +
+  facet_wrap(~ Pair_Group, nrow = 2, ncol = 1, scales = "free_x")+
+  coord_cartesian(ylim = c(0, max(data_filtered_Pan_CK$Distance, na.rm = TRUE) * 1.1))
+
+print(PanCK_violin)
+ggsave("PanCK_violin.pdf", PanCK_violin, height = 15, width = 35)
+
+```
+
+
+## Amazing statistics, testing for data distribution and variance for female classifications
+
+```{r}
+
+data_filtered_CD3 <- data_long %>%
+  filter(Classification == "CD3")
+data_filtered_CD3 <- data_filtered_CD3 %>%
+  filter(!Pair_Label == "CD3 to Distance to detection CD3 µm" )
+
+data_filtered_CD3_female <- data_filtered_CD3 %>%
+  filter((Sex == "Female"))
+```
+
+```{r}
+##Data distribution Glut1 expression for Female classifications
+results_ad_female <- data_filtered_CD3_female %>%
+  group_by(Pair_Label) %>%
+  summarise(ad_test_female_pair = list(ad.test(Distance)))
+
+# Print the results
+print(results_ad_female$ad_test_female_pair)
+```
+
+
+
+## Amazing statistics, looking at residuals females
+
+```{r}
+
+# Residualplot 
+create_residual_plot <- function(data, group) {
+  model <- lm(Distance ~ Image + ID, data = data)  # Modell mit ID
+  data$residuals <- residuals(model)
+  data$fitted <- fitted(model)
+  
+  ggplot(data, aes(x = fitted, y = residuals)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    ggtitle(paste("Residual Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Function QQ-Plot
+create_qq_plot <- function(data, group) {
+  ggplot(data, aes(sample = Distance)) +
+    stat_qq() +
+    stat_qq_line() +
+    ggtitle(paste("QQ Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Apply to all groups
+plots_residual <- data_filtered_CD3_female %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_residual_plot(.x, .y$Pair_Label))
+
+plots_qq <- data_filtered_CD3_female %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_qq_plot(.x, .y$Pair_Label))
+
+# Display plots
+for (plot in plots_residual) print(plot)
+for (plot in plots_qq) print(plot)
+
+```
+
+## Statistical Tests for not normally distributed and inequal variances
+
+```{r}
+#For comparing classifications
+
+data_filtered_CD3 %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  lapply(function(df) kruskal.test(Distance ~ Pair_Label, data = df))
+
+
+
+```
+
+```{r}
+
+results_mann_whitney_data_filtered_CD3 <- data_filtered_CD3 %>%
+  group_by(Pair_Label) %>%
+  nest() %>%
+  mutate(
+    test = map(data, ~ wilcox.test(Distance ~ Sex, data = .x)),
+    p_value = map_dbl(test, ~ .x$p.value),
+    statistic = map_dbl(test, ~ .x$statistic)
+  ) %>%
+  select(Pair_Label, p_value, statistic)
+
+print(results_mann_whitney_data_filtered_CD3)
+```
+
+## Amazing statistics, testing for data distribution and variance for male classifications
+
+```{r}
+data_filtered_CD3_male <- data_filtered_CD3 %>%
+  filter((Sex == "Male"))
+```
+
+```{r}
+##Data distribution Glut1 expression for male classifications
+results_ad_male <- data_filtered_CD3_male %>%
+  group_by(Pair_Label) %>%
+  summarise(ad_test_male_pair = list(ad.test(Distance)))
+
+# Print the results
+print(results_ad_male$ad_test_male_pair)
+```
+
+
+## Amazing statistics, looking at residuals males
+
+```{r}
+
+# Residualplot 
+create_residual_plot <- function(data, group) {
+  model <- lm(Distance ~ Image + ID, data = data)  # Modell mit ID
+  data$residuals <- residuals(model)
+  data$fitted <- fitted(model)
+  
+  ggplot(data, aes(x = fitted, y = residuals)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    ggtitle(paste("Residual Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Function QQ-Plot
+create_qq_plot <- function(data, group) {
+  ggplot(data, aes(sample = Distance)) +
+    stat_qq() +
+    stat_qq_line() +
+    ggtitle(paste("QQ Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Apply to all groups
+plots_residual <- data_filtered_CD3_male %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_residual_plot(.x, .y$Pair_Label))
+
+plots_qq <- data_filtered_CD3_male %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_qq_plot(.x, .y$Pair_Label))
+
+# Display plots
+for (plot in plots_residual) print(plot)
+for (plot in plots_qq) print(plot)
+
+```
+
+## Statistical Tests for not normally distributed and inequal variances
+
+```{r}
+#For comparing classifications
+
+data_filtered_CD3 %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  lapply(function(df) kruskal.test(Distance ~ Pair_Label, data = df))
+
+
+
+```
+
+```{r}
+
+results_mann_whitney_data_filtered_CD3 <- data_filtered_CD3 %>%
+  group_by(Pair_Label) %>%
+  nest() %>%
+  mutate(
+    test = map(data, ~ wilcox.test(Distance ~ Sex, data = .x)),
+    p_value = map_dbl(test, ~ .x$p.value),
+    statistic = map_dbl(test, ~ .x$statistic)
+  ) %>%
+  select(Pair_Label, p_value, statistic)
+
+print(results_mann_whitney_data_filtered_CD3)
+
+```
+
+## CD3
+
+```{r}
+data_filtered_CD3 <- data_long %>%
+  filter(Classification == "CD3")
+data_filtered_CD3 <- data_filtered_CD3 %>%
+  filter(!Pair_Label == "CD3 to Distance to detection CD3 µm" )
+
+#Create a grouping variable to split the 28 categories into chunks (e.g., 7 per panel)
+data_filtered_CD3 <- data_filtered_CD3 %>%
+  mutate(Pair_Group = paste0("_", ceiling(as.numeric(factor(Pair_Label)) / 11)))
+
+#Plot with facets by group
+CD3 <- ggplot(data_filtered_CD3, aes(x = Pair_Label, y = Distance, fill = Sex)) +
+  geom_boxplot(outlier.shape = 21, outlier.fill = "black", outlier.size = 2) +
+  stat_compare_means(
+    aes(group = Sex),
+    method = "wilcox.test", # or "t.test" depending on your analysis
+    label = "p.signif",     # shows stars instead of p-values
+    label.y = max(data_filtered_CD3$Distance, na.rm = TRUE) * 1.05
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = c("Female" = "red", "Male" = "blue")) +
+  labs(
+    title = "Cell–Cell Distance by Pair and Sex",
+    subtitle = "Comparison of distances between CD3 cells and cell classifications",
+    x = NULL,
+    y = "Distance (µm)",
+    fill = "Sex"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14),
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  ) +
+  #coord_cartesian(ylim = c(0, max(data_filtered_CD3$Distance, na.rm = TRUE) * 1.1)) +
+  facet_wrap(~ Pair_Group, nrow = 2, ncol = 1, scales = "free_x")+
+  coord_cartesian(ylim = c(0, max(data_filtered_CD3$Distance, na.rm = TRUE) * 1.1))
+print(CD3)
+ggsave("CD3_Boxplots.pdf", CD3, height = 20, width = 22)
+
+
+```
+## Violin
+```{r}
+#Plot with facets by group
+CD3_violin <- ggplot(data_filtered_CD3, aes(x = Pair_Label, y = Distance, fill = Sex)) +
+  geom_violin(outlier.shape = 21, outlier.fill = "black", outlier.size = 2) +
+  stat_compare_means(
+    aes(group = Sex),
+    method = "wilcox.test", # or "t.test" depending on your analysis
+    label = "p.signif",     # shows stars instead of p-values
+    label.y = max(data_filtered_CD3$Distance, na.rm = TRUE) * 1.05
+  ) +
+  stat_summary(fun.data = function(x) data.frame(y = 2000, 
+              label = paste("Median =",round(median(x), digits = 2))), 
+               position = position_dodge(width = 0.9),
+                vjust = -0.6,
+               geom="text") +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = c("Female" = "red", "Male" = "blue")) +
+  labs(
+    title = "Cell–Cell Distance by Pair and Sex",
+    subtitle = "Comparison of distances between CD3 cells and cell classifications",
+    x = NULL,
+    y = "Distance (µm)",
+    fill = "Sex"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14),
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  ) +
+  #coord_cartesian(ylim = c(0, max(data_filtered_CD3$Distance, na.rm = TRUE) * 1.1)) +
+  facet_wrap(~ Pair_Group, nrow = 2, ncol = 1, scales = "free_x")+
+  coord_cartesian(ylim = c(0, max(data_filtered_CD3$Distance, na.rm = TRUE) * 1.1))
+print(CD3_violin)
+ggsave("CD3_violin.pdf", CD3_violin, height = 15, width = 35)
+
+```
+
+## Amazing statistics, testing for data distribution and variance for female classifications
+
+```{r}
+
+data_filtered_CD3_CD8A <- data_long %>%
+  filter(Classification == "CD3_CD8A")
+data_filtered_CD3_CD8A <- data_filtered_CD3_CD8A %>%
+  filter(!Pair_Label == "CD3_CD8A to Distance to detection CD3_CD8A µm" )
+
+data_filtered_CD3_CD8A_female <- data_filtered_CD3_CD8A %>%
+  filter((Sex == "Female"))
+```
+
+```{r}
+##Data distribution Glut1 expression for Female classifications
+results_ad_female <- data_filtered_CD3_CD8A_female %>%
+  group_by(Pair_Label) %>%
+  summarise(ad_test_female_pair = list(ad.test(Distance)))
+
+# Print the results
+print(results_ad_female$ad_test_female_pair)
+```
+
+
+## Amazing statistics, looking at residuals females
+
+```{r}
+
+# Residualplot 
+create_residual_plot <- function(data, group) {
+  model <- lm(Distance ~ Image + ID, data = data)  # Modell mit ID
+  data$residuals <- residuals(model)
+  data$fitted <- fitted(model)
+  
+  ggplot(data, aes(x = fitted, y = residuals)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    ggtitle(paste("Residual Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Function QQ-Plot
+create_qq_plot <- function(data, group) {
+  ggplot(data, aes(sample = Distance)) +
+    stat_qq() +
+    stat_qq_line() +
+    ggtitle(paste("QQ Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Apply to all groups
+plots_residual <- data_filtered_CD3_CD8A_female %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_residual_plot(.x, .y$Pair_Label))
+
+plots_qq <- data_filtered_CD3_CD8A_female %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_qq_plot(.x, .y$Pair_Label))
+
+# Display plots
+for (plot in plots_residual) print(plot)
+for (plot in plots_qq) print(plot)
+
+```
+
+## Statistical Tests for not normally distributed and inequal variances
+
+```{r}
+#For comparing classifications
+
+data_filtered_CD3_CD8A %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  lapply(function(df) kruskal.test(Distance ~ Pair_Label, data = df))
+
+
+
+```
+
+```{r}
+
+results_mann_whitney_data_filtered_CD3_CD8A <- data_filtered_CD3_CD8A %>%
+  group_by(Pair_Label) %>%
+  nest() %>%
+  mutate(
+    test = map(data, ~ wilcox.test(Distance ~ Sex, data = .x)),
+    p_value = map_dbl(test, ~ .x$p.value),
+    statistic = map_dbl(test, ~ .x$statistic)
+  ) %>%
+  select(Pair_Label, p_value, statistic)
+
+print(results_mann_whitney_data_filtered_CD3_CD8A)
+```
+
+## Amazing statistics, testing for data distribution and variance for male classifications
+
+```{r}
+data_filtered_CD3_CD8A_male <- data_filtered_CD3_CD8A %>%
+  filter((Sex == "Male"))
+```
+
+```{r}
+##Data distribution Glut1 expression for male classifications
+results_ad_male <- data_filtered_CD3_CD8A_male %>%
+  group_by(Pair_Label) %>%
+  summarise(ad_test_male_pair = list(ad.test(Distance)))
+
+# Print the results
+print(results_ad_male$ad_test_male_pair)
+```
+
+
+
+## Amazing statistics, looking at residuals males
+
+```{r}
+
+# Residualplot 
+create_residual_plot <- function(data, group) {
+  model <- lm(Distance ~ Image + ID, data = data)  # Modell mit ID
+  data$residuals <- residuals(model)
+  data$fitted <- fitted(model)
+  
+  ggplot(data, aes(x = fitted, y = residuals)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    ggtitle(paste("Residual Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Function QQ-Plot
+create_qq_plot <- function(data, group) {
+  ggplot(data, aes(sample = Distance)) +
+    stat_qq() +
+    stat_qq_line() +
+    ggtitle(paste("QQ Plot for Pair_Label:", group)) +
+    theme_minimal()
+}
+
+# Apply to all groups
+plots_residual <- data_filtered_CD3_CD8A_male %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_residual_plot(.x, .y$Pair_Label))
+
+plots_qq <- data_filtered_CD3_CD8A_male %>%
+  group_by(Pair_Label) %>%
+  group_map(~ create_qq_plot(.x, .y$Pair_Label))
+
+# Display plots
+for (plot in plots_residual) print(plot)
+for (plot in plots_qq) print(plot)
+
+```
+
+## Statistical Tests for not normally distributed and inequal variances
+
+```{r}
+#For comparing classifications
+
+data_filtered_CD3_CD8A %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  lapply(function(df) kruskal.test(Distance ~ Pair_Label, data = df))
+
+
+
+```
+
+```{r}
+
+results_mann_whitney_data_filtered_CD3_CD8A <- data_filtered_CD3_CD8A %>%
+  group_by(Pair_Label) %>%
+  nest() %>%
+  mutate(
+    test = map(data, ~ wilcox.test(Distance ~ Sex, data = .x)),
+    p_value = map_dbl(test, ~ .x$p.value),
+    statistic = map_dbl(test, ~ .x$statistic)
+  ) %>%
+  select(Pair_Label, p_value, statistic)
+
+print(results_mann_whitney_data_filtered_CD3_CD8A)
+```
+
+## CD3_CD8A
+
+```{r}
+data_filtered_CD3_CD8A <- data_long %>%
+  filter(Classification == "CD3_CD8A")
+data_filtered_CD3_CD8A <- data_filtered_CD3_CD8A %>%
+  filter(!Pair_Label == "CD3_CD8A to Distance to detection CD3_CD8A µm" )
+
+#Create a grouping variable to split the 28 categories into chunks (e.g., 7 per panel)
+data_filtered_CD3_CD8A <- data_filtered_CD3_CD8A %>%
+  mutate(Pair_Group = paste0("_", ceiling(as.numeric(factor(Pair_Label)) / 11)))
+
+#Plot with facets by group
+CD3_CD8A <- ggplot(data_filtered_CD3_CD8A, aes(x = Pair_Label, y = Distance, fill = Sex)) +
+  geom_boxplot(outlier.shape = 21, outlier.fill = "black", outlier.size = 2) +
+  stat_compare_means(
+    aes(group = Sex),
+    method = "wilcox.test", # or "t.test" depending on your analysis
+    label = "p.signif",     # shows stars instead of p-values
+    label.y = max(data_filtered_CD3_CD8A$Distance, na.rm = TRUE) * 1.05
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = c("Female" = "red", "Male" = "blue")) +
+  labs(
+    title = "Cell–Cell Distance by Pair and Sex",
+    subtitle = "Comparison of distances between CD3_CD8A and other classifications",
+    x = NULL,
+    y = "Distance (µm)",
+    fill = "Sex"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14),
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  ) +
+  #coord_cartesian(ylim = c(0, max(data_filtered_CD3_CD8A$Distance, na.rm = TRUE) * 1.1)) +
+  facet_wrap(~ Pair_Group, nrow = 2, ncol = 1, scales = "free_x")+
+  coord_cartesian(ylim = c(0, max(data_filtered_CD3_CD8A$Distance, na.rm = TRUE) * 1.1))
+print(CD3_CD8A)
+ggsave("CD3_CD8A_Boxplots.pdf", CD3_CD8A, height = 20, width = 22)
+
+
+```
+## Violin plots
+```{r}
+#Plot with facets by group
+CD3_CD8A_violin <- ggplot(data_filtered_CD3_CD8A, aes(x = Pair_Label, y = Distance, fill = Sex)) +
+  geom_violin(outlier.shape = 21, outlier.fill = "black", outlier.size = 2) +
+  stat_compare_means(
+    aes(group = Sex),
+    method = "wilcox.test", # or "t.test" depending on your analysis
+    label = "p.signif",     # shows stars instead of p-values
+    label.y = max(data_filtered_CD3_CD8A$Distance, na.rm = TRUE) * 1.05
+  ) +
+   stat_summary(fun.data = function(x) data.frame(y = 2000, 
+              label = paste("Median =",round(median(x), digits = 2))), 
+               position = position_dodge(width = 0.9),
+                vjust = -0.6,
+               geom="text") +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = c("Female" = "red", "Male" = "blue")) +
+  labs(
+    title = "Cell–Cell Distance by Pair and Sex",
+    subtitle = "Comparison of distances between CD3_CD8A and other classifications",
+    x = NULL,
+    y = "Distance (µm)",
+    fill = "Sex"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14),
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  ) +
+  #coord_cartesian(ylim = c(0, max(data_filtered_CD3_CD8A$Distance, na.rm = TRUE) * 1.1)) +
+  facet_wrap(~ Pair_Group, nrow = 2, ncol = 1, scales = "free_x")+
+  coord_cartesian(ylim = c(0, max(data_filtered_CD3_CD8A$Distance, na.rm = TRUE) * 1.1))
+print(CD3_CD8A_violin)
+ggsave("CD3_CD8A_violin.pdf", CD3_CD8A_violin, height = 15, width = 35)
+
+```
+
+## Summed Boxplot
+
+```{r}
+data_long_summed_box <- data_long %>%
+  filter(Pair_Label == "CD3_CD8A to Distance to detection LTA µm" |
+          Pair_Label == "CD3_CD8A to Distance to detection LPS µm" |
+           Pair_Label == "CD3 to Distance to detection LPS µm" |
+           Pair_Label == "CD3 to Distance to detection LTA µm" |
+           Pair_Label == "Pan_CK to Distance to detection LPS µm" |
+           Pair_Label == "Pan_CK to Distance to detection LTA µm"
+         )
+
+#Create a grouping variable to split the 28 categories into chunks (e.g., 7 per panel)
+data_long_summed_box <- data_long_summed_box %>%
+  mutate(Pair_Group = paste0("_", ceiling(as.numeric(factor(Pair_Label)) / 3)))
+
+#Plot with facets by group
+Summed_box <- ggplot(data_long_summed_box, aes(x = Pair_Label, y = Distance, fill = Sex)) +
+  geom_boxplot(outlier.shape = 21, outlier.fill = "black", outlier.size = 2) +
+  stat_compare_means(
+    aes(group = Sex),
+    method = "wilcox.test", # or "t.test" depending on your analysis
+    label = "p.signif",     # shows stars instead of p-values
+    label.y = max(data_long_summed_box$Distance, na.rm = TRUE) * 1.05
+  ) +
+  theme_minimal(base_size = 20) +
+  scale_fill_manual(values = c("Female" = "red", "Male" = "blue")) +
+  labs(
+    title = "Cell–Cell Distance by Pair and Sex",
+    subtitle = "Comparison of distances between CD3_CD8A and other classifications",
+    x = NULL,
+    y = "Distance (µm)",
+    fill = "Sex"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14),
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  ) +
+  #coord_cartesian(ylim = c(0, max(data_long_summed_box$Distance, na.rm = TRUE) * 1.1)) +
+  #facet_wrap(~ Pair_Group, nrow = 2, ncol = 1, scales = "free_x")+
+  coord_cartesian(ylim = c(0, max(data_long_summed_box$Distance, na.rm = TRUE) * 1.1))
+print(Summed_box)
+ggsave("Summed_box.pdf", Summed_box, height = 10, width = 12)
+
+
+
+```
+```{r}
+
+median_df <- aggregate(
+  Distance ~ Image+ Classification+ Sex+ ID + Pair + Pair_Label,
+  data = data_long_summed_box,
+  FUN = median,
+  na.rm = TRUE
+)
+
+#colnames(median_df)[which(colnames(median_df) == "Distance")] <- "Median_Distance"
+
+```
+
+## Violin plots
+```{r}
+#Plot with facets by group
+Summed_violin <- ggplot(data_long_summed_box, aes(x = Pair_Label, y = Distance, fill = Sex)) +
+  geom_violin(outlier.shape = 21, outlier.fill = "black", outlier.size = 1, alpha = 0.8,) +
+  stat_compare_means(
+    aes(group = Sex),
+    method = "wilcox.test", # or "t.test" depending on your analysis
+    label = "p.signif",     # shows stars instead of p-values
+    label.y = max(data_long_summed_box$Distance, na.rm = TRUE) * 1.05
+  ) +
+  stat_summary(fun.data = function(x) data.frame(y = 2000, 
+              label = paste("Median =",round(median(x), digits = 2))), 
+               position = position_dodge(width = 0.9),
+                vjust = -0.6,
+               geom="text") +
+  theme_minimal(base_size = 20) +
+  labs(
+    title = "Cell–Cell Distance by Pair and Sex",
+    subtitle = "Comparison of distances between CD3_CD8A and other classifications",
+    x = NULL,
+    y = "Distance (µm)",
+    fill = "Sex"
+  ) +
+  geom_point(
+  data = median_df,
+  aes(
+    group = Sex,
+    shape = ID,# map shape to Image
+  ),
+  color = "black",
+  position = position_jitterdodge(
+    jitter.width = 0.7,
+    dodge.width = 1
+  ),
+  size = 3,
+  alpha = 0.55,
+  stroke = 1
+  )+
+  scale_shape_manual(  values = c("Female1" = 0, "Female2" = 1, "Female3" = 2, "Female4" = 5, "Male1" = 6, "Male2" = 7, "Male3" = 8, "Male4" = 9  ))+
+  scale_fill_manual(values = c("Female" = "red", "Male" = "blue")) +
+  theme(
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14),
+    legend.position = "bottom",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  ) +
+  scale_y_continuous(breaks = seq(0, 5000, by = 500), limits = c(0, 5100)) +
+  #coord_cartesian(ylim = c(0, max(data_long_summed_box$Distance, na.rm = TRUE) * 1.1)) +
+  #facet_wrap(~ Pair_Group, nrow = 2, ncol = 1, scales = "free_x")+
+  coord_cartesian(ylim = c(0, max(data_long_summed_box$Distance, na.rm = TRUE) * 1.1))
+print(Summed_violin)
+ggsave("Summed_violin.pdf", Summed_violin, height = 10, width = 20)
+
+```
+
+
+
+# Cumulative Distribution Plots
+
+```{r}
+data_long_cdist <- data_long %>%
+  filter(Pair_Label == "CD3_CD8A to Distance to detection LTA µm" |
+          Pair_Label == "CD3_CD8A to Distance to detection LPS µm" |
+           Pair_Label == "CD3 to Distance to detection LPS µm" |
+           Pair_Label == "CD3 to Distance to detection LTA µm" 
+         )
+
+Cumulative_plot <- ggplot(data_long_cdist, aes(x = Distance, color = interaction(Pair_Label, Sex))) +
+  stat_ecdf(aes(linetype = interaction(Pair_Label, Sex))) +
+  ggtitle("Cumulative Distribution of Cell–Cell Distances") +
+  xlab("Distance (µm)") +
+  ylab("Cumulative Frequency") +
+  theme_minimal(base_size = 20) +
+  scale_x_continuous(breaks = seq(0, 1000, by = 250), limits = c(0, 1000)) +
+  scale_color_manual(values = c(
+    "#00B8D4", "#FFB74D", "#D50000", "#00FF00", "#000080",
+    "#E040FB", "#18FFFF", "#804A00"
+  )) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+print(Cumulative_plot)
+ggsave("Cumulative_plot.pdf", Cumulative_plot, height = 10, width = 15)
+```
+
+
+# Table containing the patient cohort
+```{r}
+
+patient_data <- read_xlsx("IF_cohort_patient_charactersitics.xlsx")
+
+selected_cols <- c("Sex", "Birth_year", "Diff_grade", "Chemotherapy_prior_resection")# Filter and store in a new data frame
+patient_data_summary_table <- patient_data[selected_cols]
+
+colnames(patient_data_summary_table)[2] <- "Age"
+patient_data_summary_table$Age <- 2026 - patient_data_summary_table$Age
+
+
+patient_data_summary_table <- patient_data_summary_table %>%
+  mutate(Age = as.numeric(Age))
+
+# Create summary table
+tbl <- tbl_summary(
+  data = patient_data_summary_table,
+  by = Sex , # stratify by treatment
+  type = list(Age ~ "continuous"),  # Force Age to be continuous
+  statistic = list(all_continuous() ~ "{mean} ({sd})",
+                   all_categorical() ~ "{n} ({p}%)"),
+  label = list( Age ~ "Age (years)", Chemotherapy_prior_resection ~ "Chemotherapy prior surgery" , Diff_grade ~ "Differentiation")
+) #%>% # Add this for statistical testing 
+ # add_p() %>%
+  #bold_labels()
+
+gt_tbl <- as_gt(tbl)
+gtsave(gt_tbl, "patient_summary_IF_cohort.pdf")
+
+
+```
+
+
+## Session Info
+
+```{r}
+sessionInfo()
+```
